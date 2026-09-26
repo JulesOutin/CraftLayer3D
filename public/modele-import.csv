@@ -1,0 +1,7 @@
+slug,titre,description,image_url,sku,declinaison,matiere,grammes,minutes_impression,minutes_finition,prix_force,actif,stock
+vase-spirale,Vase spirale,"Vase décoratif imprimé en mode vase, étanche avec un tube en verre.",,VASE-SP-PLA-NOIR,PLA noir,PLA,85,210,5,,oui,12
+vase-spirale,,,,VASE-SP-SILK-OR,PLA Silk or,PLA Silk,85,230,5,,oui,8
+vase-spirale,,,,VASE-SP-PETG-BLEU,PETG bleu translucide,PETG,90,250,5,,oui,0
+support-casque,Support de casque,"Support de bureau stable, pied lesté, compatible tous casques.",,SUPP-CASQ-PLA-NOIR,PLA noir,PLA,120,300,10,,oui,20
+support-casque,,,,SUPP-CASQ-PLA-BLANC,PLA blanc,PLA,120,300,10,,oui,20
+porte-cles-dragon,Porte-clés dragon articulé,"Dragon articulé imprimé d'une seule pièce, sans assemblage.",,PC-DRAG-SILK-ARC,PLA Silk arc-en-ciel,PLA Silk,12,55,3,6.90,oui,

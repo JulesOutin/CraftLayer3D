@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@theme {
+  --color-plate: #eceef0;      /* plateau d'impression */
+  --color-sheet: #f8f9fa;      /* surfaces */
+  --color-ink: #1c2733;        /* texte */
+  --color-muted: #5b6673;
+  --color-line: #c9ced4;
+  --color-filament: #2f4bff;   /* accent unique */
+  --color-filament-dark: #1f34c7;
+  --color-nozzle: #f2b705;     /* statut « à imprimer » */
+  --color-danger: #c62e2e;
+  --color-ok: #17804a;
+
+  --font-display: "Bricolage Grotesque", "Arial Narrow", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html {
+  background: var(--color-plate);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-filament);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lignes de couches : le motif signature, utilisé derrière les visuels produits */
+.layers {
+  background-color: var(--color-sheet);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 5px,
+    rgb(28 39 51 / 0.045) 5px,
+    rgb(28 39 51 / 0.045) 6px
+  );
+}
+
+/* Titre du hero : empilement de couches en décalé */
+.stacked {
+  font-family: var(--font-display);
+  letter-spacing: -0.035em;
+  line-height: 0.92;
+  text-shadow:
+    0 2px 0 rgb(47 75 255 / 0.55),
+    0 4px 0 rgb(47 75 255 / 0.4),
+    0 6px 0 rgb(47 75 255 / 0.25),
+    0 8px 0 rgb(47 75 255 / 0.12);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stacked {
+    animation: build 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  @keyframes build {
+    from { clip-path: inset(100% 0 0 0); }
+    to { clip-path: inset(0 0 0 0); }
+  }
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  padding: 0.7rem 1.35rem;
+  font-weight: 600;
+  background: var(--color-filament);
+  color: white;
+  transition: background 150ms;
+}
+.btn:hover { background: var(--color-filament-dark); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 500;
+  border: 1px solid var(--color-line);
+  background: var(--color-sheet);
+}
+.btn-ghost:hover { border-color: var(--color-ink); }
+
+@layer components {
+  .field {
+    width: 100%;
+    border: 1px solid var(--color-line);
+    background: white;
+    border-radius: 0.5rem;
+    padding: 0.55rem 0.75rem;
+  }
+  .field:focus { border-color: var(--color-filament); outline: none; }
+}
+
+.label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.3rem;
+}
