@@ -1,4 +1,4 @@
-import type { Material, PricingSettings } from "./types";
+import type { Material, PricingSettings, ShippingRate } from "./types";
 
 type PrintSpec = {
   grams: number;
@@ -67,6 +67,28 @@ export function computePrice(
 export function shippingFor(subtotal: number, s: Pick<PricingSettings, "shipping_flat_rate" | "free_shipping_from">) {
   if (s.free_shipping_from != null && subtotal >= Number(s.free_shipping_from)) return 0;
   return Number(s.shipping_flat_rate);
+}
+
+/**
+ * Frais de livraison par tranche de poids et pays de destination (grille
+ * renseignée dans Admin > Prix, censée refléter le contrat transporteur :
+ * Mondial Relay ne fournit pas d'API de devis en temps réel, seulement la
+ * création d'étiquette). Retombe sur le tarif forfaitaire si aucune tranche
+ * ne correspond, et reste gratuit au-delà du seuil configuré.
+ */
+export function shippingForWeight(
+  totalGrams: number,
+  country: string,
+  rates: Pick<ShippingRate, "country" | "max_grams" | "price">[],
+  s: Pick<PricingSettings, "shipping_flat_rate" | "free_shipping_from">,
+  subtotal: number,
+): number {
+  if (s.free_shipping_from != null && subtotal >= Number(s.free_shipping_from)) return 0;
+  const bracket = rates
+    .filter((r) => r.country === country)
+    .sort((a, b) => (a.max_grams ?? Infinity) - (b.max_grams ?? Infinity))
+    .find((r) => r.max_grams == null || totalGrams <= r.max_grams);
+  return Number(bracket ? bracket.price : s.shipping_flat_rate);
 }
 
 export const formatEUR = (n: number) =>

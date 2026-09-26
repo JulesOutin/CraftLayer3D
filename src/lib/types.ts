@@ -46,6 +46,23 @@ export type Product = {
 
 export type ProductWithVariants = Product & { variants: Variant[] };
 
+export type ShippingRate = {
+  id: string;
+  country: string;
+  max_grams: number | null;
+  price: number;
+};
+
+export type RelayPoint = {
+  id: string;
+  name: string;
+  address1: string;
+  address2?: string;
+  postcode: string;
+  city: string;
+  country: string;
+};
+
 export type OrderStatus = "paid" | "printing" | "shipped" | "delivered" | "cancelled";
 
 export const ORDER_STATUSES: { value: OrderStatus; label: string }[] = [

@@ -68,13 +68,13 @@ export default async function HomePage({ searchParams }: Props) {
             return (
               <li key={p.id}>
                 <Link href={`/produits/${p.slug}`} className="group block">
-                  <div className="layers aspect-square overflow-hidden rounded-2xl">
+                  <div className="layers aspect-[4/5] overflow-hidden rounded-2xl">
                     {p.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={p.image_url}
                         alt={p.title}
-                        className={`h-full w-full object-contain p-6 transition-transform duration-300 group-hover:scale-[1.03] ${outOfStock ? "opacity-50" : ""}`}
+                        className={`h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.03] ${outOfStock ? "opacity-50" : ""}`}
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center text-muted">Photo à venir</div>

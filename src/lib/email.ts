@@ -7,6 +7,11 @@ import type { OrderStatus } from "./types";
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const FROM = process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev";
 
+/** Échappe le texte injecté dans le HTML des e-mails (nom client saisi chez Stripe, notamment). */
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
 async function send(to: string, subject: string, html: string) {
   if (!resend) {
     console.warn(`RESEND_API_KEY absent : e-mail "${subject}" à ${to} non envoyé.`);
@@ -28,6 +33,7 @@ function layout(title: string, body: string) {
 }
 
 type OrderItemLine = { product_title: string; variant_name: string; quantity: number; unit_price: number };
+type OrderRelayPoint = { name: string; address1: string; address2?: string; postcode: string; city: string; country: string };
 type OrderConfirmation = {
   email: string | null;
   order_number: number;
@@ -36,6 +42,7 @@ type OrderConfirmation = {
   subtotal: number;
   shipping: number;
   total: number;
+  relayPoint?: OrderRelayPoint | null;
 };
 
 export async function sendOrderConfirmationEmail(order: OrderConfirmation) {
@@ -43,18 +50,52 @@ export async function sendOrderConfirmationEmail(order: OrderConfirmation) {
   const rows = order.items
     .map(
       (it) =>
-        `<tr><td style="padding:4px 8px 4px 0">${it.quantity} × ${it.product_title} — ${it.variant_name}</td><td style="padding:4px 0;text-align:right;white-space:nowrap">${formatEUR(it.unit_price * it.quantity)}</td></tr>`,
+        `<tr><td style="padding:4px 8px 4px 0">${it.quantity} × ${esc(it.product_title)} — ${esc(it.variant_name)}</td><td style="padding:4px 0;text-align:right;white-space:nowrap">${formatEUR(it.unit_price * it.quantity)}</td></tr>`,
     )
     .join("");
+  const relay = order.relayPoint;
+  const relayBlock = relay
+    ? `<p style="margin-top:16px;padding:12px;background:#f4f4f4;border-radius:8px">
+        À retirer en point relais :<br/>
+        <strong>${esc(relay.name)}</strong><br/>
+        ${esc(relay.address1)}${relay.address2 ? `<br/>${esc(relay.address2)}` : ""}<br/>
+        ${esc(relay.postcode)} ${esc(relay.city)}${relay.country && relay.country !== "FR" ? `, ${esc(relay.country)}` : ""}
+      </p>`
+    : "";
   const body = `
-    <p>Merci${order.customer_name ? ` ${order.customer_name}` : ""} ! Votre commande n° ${order.order_number} est confirmée.</p>
+    <p>Merci${order.customer_name ? ` ${esc(order.customer_name)}` : ""} ! Votre commande n° ${order.order_number} est confirmée.</p>
     <table style="width:100%;border-collapse:collapse;margin-top:12px">${rows}</table>
     <p style="text-align:right;margin-top:8px">
       Livraison : ${formatEUR(order.shipping)}<br/>
       <strong>Total : ${formatEUR(order.total)}</strong>
     </p>
+    ${relayBlock}
     <p style="margin-top:16px">${SHOP.leadTime}.</p>`;
   await send(order.email, `Commande n° ${order.order_number} confirmée`, layout(`Merci pour votre commande !`, body));
+}
+
+type RelayPointAssigned = {
+  email: string | null;
+  order_number: number;
+  relayPoint: OrderRelayPoint;
+};
+
+export async function sendRelayPointAssignedEmail(order: RelayPointAssigned) {
+  if (!order.email) return;
+  const r = order.relayPoint;
+  const body = `
+    <p>Votre commande n° ${order.order_number} sera à retirer dans ce point relais :</p>
+    <p style="margin-top:12px;padding:12px;background:#f4f4f4;border-radius:8px">
+      <strong>${esc(r.name)}</strong><br/>
+      ${esc(r.address1)}${r.address2 ? `<br/>${esc(r.address2)}` : ""}<br/>
+      ${esc(r.postcode)} ${esc(r.city)}${r.country && r.country !== "FR" ? `, ${esc(r.country)}` : ""}
+    </p>
+    <p style="margin-top:16px">Vous recevrez un e-mail de suivi dès l&apos;expédition de votre colis.</p>`;
+  await send(
+    order.email,
+    `Commande n° ${order.order_number} : point relais confirmé`,
+    layout(`Votre point de retrait est confirmé`, body),
+  );
 }
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -76,7 +117,7 @@ export async function sendOrderStatusEmail(order: OrderStatusUpdate) {
   if (!order.email) return;
   const body = `
     <p>Votre commande n° ${order.order_number} est désormais <strong>${STATUS_LABELS[order.status]}</strong>.</p>
-    ${order.tracking_number ? `<p>Numéro de suivi : <strong>${order.tracking_number}</strong></p>` : ""}`;
+    ${order.tracking_number ? `<p>Numéro de suivi : <strong>${esc(order.tracking_number)}</strong></p>` : ""}`;
   await send(
     order.email,
     `Commande n° ${order.order_number} : ${STATUS_LABELS[order.status]}`,

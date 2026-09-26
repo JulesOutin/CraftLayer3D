@@ -6,8 +6,8 @@ import { requireAdmin } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { computePrice } from "@/lib/pricing";
 import { recomputeAllPrices } from "@/lib/recompute";
-import { sendOrderStatusEmail } from "@/lib/email";
-import type { Material, OrderStatus, PricingSettings } from "@/lib/types";
+import { sendOrderStatusEmail, sendRelayPointAssignedEmail } from "@/lib/email";
+import type { Material, OrderStatus, PricingSettings, RelayPoint } from "@/lib/types";
 import { ORDER_STATUSES } from "@/lib/types";
 
 // ---------------------------------------------------------------- session
@@ -43,6 +43,34 @@ export async function updateOrder(formData: FormData) {
   }
 }
 
+/** Assignation manuelle du point relais le plus proche (en attendant le widget Mondial Relay). */
+export async function setRelayPoint(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+  const name = String(formData.get("name") ?? "").trim();
+  const address1 = String(formData.get("address1") ?? "").trim();
+  const address2 = String(formData.get("address2") ?? "").trim();
+  const postcode = String(formData.get("postcode") ?? "").trim();
+  const city = String(formData.get("city") ?? "").trim();
+  const country = String(formData.get("country") ?? "FR").trim().toUpperCase();
+  const relayId = String(formData.get("relay_id") ?? "").trim();
+
+  if (!name || !address1 || !postcode || !city) return;
+
+  const relayPoint: RelayPoint = { id: relayId || "manuel", name, address1, postcode, city, country };
+  if (address2) relayPoint.address2 = address2;
+
+  const { data: order } = await supabase
+    .from("orders")
+    .update({ relay_point: relayPoint })
+    .eq("id", id)
+    .select("email, order_number")
+    .single();
+
+  revalidatePath("/admin/commandes");
+  if (order) await sendRelayPointAssignedEmail({ email: order.email, order_number: order.order_number, relayPoint });
+}
+
 // ---------------------------------------------------------------- produits
 
 export async function toggleProduct(formData: FormData) {
@@ -65,6 +93,200 @@ export async function updateStock(formData: FormData) {
   await supabase.from("variants").update({ stock_quantity: stock }).eq("id", id);
   revalidatePath("/admin/produits");
   revalidatePath("/", "layout");
+}
+
+export async function createProduct(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const title = String(formData.get("title") ?? "").trim();
+  const slug = String(formData.get("slug") ?? "").trim().toLowerCase();
+  const description = String(formData.get("description") ?? "").trim();
+  const image_url = String(formData.get("image_url") ?? "").trim() || null;
+
+  if (!title) redirect(`/admin/produits/nouveau?erreur=titre`);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) redirect(`/admin/produits/nouveau?erreur=slug`);
+
+  const { data, error } = await supabase
+    .from("products")
+    .insert({ title, slug, description, image_url, active: false })
+    .select("id")
+    .single();
+  if (error || !data) redirect(`/admin/produits/nouveau?erreur=${error?.code === "23505" ? "doublon" : "enregistrement"}`);
+
+  revalidatePath("/admin/produits");
+  redirect(`/admin/produits/${data.id}?ok=creation`);
+}
+
+export async function deleteProduct(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+
+  const { data: images } = await supabase.storage.from("product-images").list(id);
+  if (images?.length) {
+    await supabase.storage.from("product-images").remove(images.map((f) => `${id}/${f.name}`));
+  }
+
+  await supabase.from("products").delete().eq("id", id);
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  redirect("/admin/produits?ok=suppression");
+}
+
+export async function updateProduct(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+  const title = String(formData.get("title") ?? "").trim();
+  const slug = String(formData.get("slug") ?? "").trim().toLowerCase();
+  const description = String(formData.get("description") ?? "").trim();
+  const image_url = String(formData.get("image_url") ?? "").trim() || null;
+
+  if (!title) redirect(`/admin/produits/${id}?erreur=titre`);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) redirect(`/admin/produits/${id}?erreur=slug`);
+
+  const { error } = await supabase
+    .from("products")
+    .update({ title, slug, description, image_url })
+    .eq("id", id);
+  if (error) redirect(`/admin/produits/${id}?erreur=${error.code === "23505" ? "doublon" : "enregistrement"}`);
+
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  revalidatePath(`/produits/${slug}`);
+  redirect(`/admin/produits/${id}?ok=produit`);
+}
+
+export async function updateVariant(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+  const productId = String(formData.get("product_id"));
+  const name = String(formData.get("name") ?? "").trim();
+  const sku = String(formData.get("sku") ?? "").trim();
+  const material_id = String(formData.get("material_id") ?? "");
+  const active = formData.get("active") === "on";
+  const overrideRaw = String(formData.get("price_override") ?? "").trim();
+  const position = Math.round(num(formData.get("position")));
+
+  if (!name || !sku || !material_id) redirect(`/admin/produits/${productId}?erreur=variante`);
+
+  const [{ data: material }, { data: settings }] = await Promise.all([
+    supabase.from("materials").select("*").eq("id", material_id).single<Material>(),
+    supabase.from("pricing_settings").select("*").eq("id", 1).single<PricingSettings>(),
+  ]);
+  if (!material || !settings) redirect(`/admin/produits/${productId}?erreur=variante`);
+
+  const spec = {
+    grams: num(formData.get("grams")),
+    print_minutes: Math.round(num(formData.get("print_minutes"))),
+    labor_minutes: Math.round(num(formData.get("labor_minutes"))),
+    price_override: overrideRaw ? num(overrideRaw) : null,
+  };
+  const { price } = computePrice(spec, material, settings);
+
+  const { error } = await supabase
+    .from("variants")
+    .update({
+      name,
+      sku,
+      material_id,
+      grams: spec.grams,
+      print_minutes: spec.print_minutes,
+      labor_minutes: spec.labor_minutes,
+      price_override: spec.price_override,
+      price,
+      active,
+      position,
+    })
+    .eq("id", id);
+  if (error) redirect(`/admin/produits/${productId}?erreur=${error.code === "23505" ? "sku" : "variante"}`);
+
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  redirect(`/admin/produits/${productId}?ok=variante`);
+}
+
+export async function createVariant(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const productId = String(formData.get("product_id"));
+  const name = String(formData.get("name") ?? "").trim();
+  const sku = String(formData.get("sku") ?? "").trim();
+  const material_id = String(formData.get("material_id") ?? "");
+  const overrideRaw = String(formData.get("price_override") ?? "").trim();
+
+  if (!name || !sku || !material_id) redirect(`/admin/produits/${productId}?erreur=variante`);
+
+  const [{ data: material }, { data: settings }, { count }] = await Promise.all([
+    supabase.from("materials").select("*").eq("id", material_id).single<Material>(),
+    supabase.from("pricing_settings").select("*").eq("id", 1).single<PricingSettings>(),
+    supabase.from("variants").select("id", { count: "exact", head: true }).eq("product_id", productId),
+  ]);
+  if (!material || !settings) redirect(`/admin/produits/${productId}?erreur=variante`);
+
+  const spec = {
+    grams: num(formData.get("grams")),
+    print_minutes: Math.round(num(formData.get("print_minutes"))),
+    labor_minutes: Math.round(num(formData.get("labor_minutes"))),
+    price_override: overrideRaw ? num(overrideRaw) : null,
+  };
+  const { price } = computePrice(spec, material, settings);
+
+  const { error } = await supabase.from("variants").insert({
+    product_id: productId,
+    name,
+    sku,
+    material_id,
+    grams: spec.grams,
+    print_minutes: spec.print_minutes,
+    labor_minutes: spec.labor_minutes,
+    price_override: spec.price_override,
+    price,
+    active: true,
+    position: count ?? 0,
+  });
+  if (error) redirect(`/admin/produits/${productId}?erreur=${error.code === "23505" ? "sku" : "variante"}`);
+
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  redirect(`/admin/produits/${productId}?ok=variante`);
+}
+
+export async function deleteVariant(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+  const productId = String(formData.get("product_id"));
+  await supabase.from("variants").delete().eq("id", id);
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  redirect(`/admin/produits/${productId}?ok=suppression`);
+}
+
+export async function uploadProductImage(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const productId = String(formData.get("product_id"));
+  const file = formData.get("file");
+
+  if (!(file instanceof File) || file.size === 0) redirect(`/admin/produits/${productId}?erreur=image`);
+  if (!file.type.startsWith("image/")) redirect(`/admin/produits/${productId}?erreur=image`);
+  if (file.size > 5 * 1024 * 1024) redirect(`/admin/produits/${productId}?erreur=image-taille`);
+
+  // Nettoie les anciennes photos du produit pour ne pas accumuler des fichiers
+  // orphelins dans le stockage à chaque remplacement.
+  const { data: existing } = await supabase.storage.from("product-images").list(productId);
+  if (existing?.length) {
+    await supabase.storage.from("product-images").remove(existing.map((f) => `${productId}/${f.name}`));
+  }
+
+  const ext = (file.name.split(".").pop() ?? "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  const path = `${productId}/${Date.now()}.${ext}`;
+  const { error: upErr } = await supabase.storage
+    .from("product-images")
+    .upload(path, file, { contentType: file.type, upsert: true });
+  if (upErr) redirect(`/admin/produits/${productId}?erreur=image`);
+
+  const { data } = supabase.storage.from("product-images").getPublicUrl(path);
+  await supabase.from("products").update({ image_url: data.publicUrl }).eq("id", productId);
+
+  revalidatePath("/admin/produits");
+  revalidatePath("/", "layout");
+  redirect(`/admin/produits/${productId}?ok=image`);
 }
 
 // ---------------------------------------------------------------- prix & matières
@@ -111,6 +333,36 @@ export async function saveMaterial(formData: FormData) {
   await recomputeAllPrices(supabase);
   revalidatePath("/", "layout");
   redirect("/admin/prix?ok=matiere");
+}
+
+// ---------------------------------------------------------------- livraison
+
+export async function saveShippingRate(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id") ?? "");
+  const country = String(formData.get("country") ?? "").trim().toUpperCase();
+  const maxRaw = String(formData.get("max_grams") ?? "").trim();
+  const price = num(formData.get("price"));
+
+  if (!/^[A-Z]{2}$/.test(country)) redirect("/admin/prix?erreur=pays");
+  const max_grams = maxRaw ? Math.round(num(maxRaw)) : null;
+  if (max_grams !== null && max_grams <= 0) redirect("/admin/prix?erreur=poids");
+
+  const { error } = id
+    ? await supabase.from("shipping_rates").update({ country, max_grams, price }).eq("id", id)
+    : await supabase.from("shipping_rates").insert({ country, max_grams, price });
+  if (error) redirect(`/admin/prix?erreur=${error.code === "23505" ? "doublon-livraison" : "livraison"}`);
+
+  revalidatePath("/", "layout");
+  redirect("/admin/prix?ok=livraison");
+}
+
+export async function deleteShippingRate(formData: FormData) {
+  const { supabase } = await requireAdmin();
+  const id = String(formData.get("id"));
+  await supabase.from("shipping_rates").delete().eq("id", id);
+  revalidatePath("/", "layout");
+  redirect("/admin/prix?ok=livraison");
 }
 
 // ---------------------------------------------------------------- import CSV

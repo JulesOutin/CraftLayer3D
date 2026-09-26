@@ -5,7 +5,7 @@ export function CatalogFilters({ materials, values }: { materials: Material[]; v
   const hasFilters = values.q || values.matiere || values.prixMin || values.prixMax;
 
   return (
-    <form method="get" className="flex flex-wrap items-end gap-3 rounded-xl border border-line bg-sheet p-4">
+    <form method="get" className="flex flex-wrap items-end gap-3 rounded-xl border border-line bg-sheet p-4 mb-10">
       <div className="min-w-[10rem] flex-1">
         <label className="label" htmlFor="q">Rechercher</label>
         <input id="q" name="q" type="search" defaultValue={values.q} placeholder="Nom du produit" className="field" />

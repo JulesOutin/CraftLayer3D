@@ -92,21 +92,56 @@ alter table public.variants
 
 create index if not exists variants_product_idx on public.variants (product_id);
 
--- Décrémente le stock d'une variante après une commande payée. Fonction
--- security definer réservée au service_role (webhook Stripe) : elle contourne
--- le RLS, donc son exécution est retirée aux rôles publics ci-dessous.
+-- Décrémente le stock d'une variante après une commande payée et signale une
+-- éventuelle survente (deux clients payant le dernier exemplaire avant que le
+-- webhook n'ait décrémenté) au lieu de la masquer en plafonnant à zéro en
+-- silence. Fonction security definer réservée au service_role (webhook
+-- Stripe) : elle contourne le RLS, donc son exécution est retirée aux rôles
+-- publics ci-dessous. Le type de retour change (void -> table) : il faut
+-- supprimer l'ancienne version avant de recréer, `create or replace` refusant
+-- de changer une signature de retour.
+drop function if exists public.decrement_stock(uuid, integer);
 create or replace function public.decrement_stock(p_variant_id uuid, p_qty integer)
-returns void
-language sql
+returns table (had_enough boolean)
+language plpgsql
 security definer
 set search_path = public
 as $$
-  update public.variants
-  set stock_quantity = greatest(stock_quantity - p_qty, 0)
-  where id = p_variant_id and stock_quantity is not null;
+declare
+  before_qty integer;
+begin
+  select stock_quantity into before_qty from public.variants where id = p_variant_id for update;
+  if before_qty is null then
+    return query select true; -- stock non suivi pour cette déclinaison
+    return;
+  end if;
+  update public.variants set stock_quantity = greatest(before_qty - p_qty, 0) where id = p_variant_id;
+  return query select before_qty >= p_qty;
+end;
 $$;
 
 revoke execute on function public.decrement_stock(uuid, integer) from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- Frais de livraison par tranche de poids (grammes) et par pays
+-- Une ligne avec max_grams = null couvre la tranche la plus lourde.
+-- Si aucune tranche ne correspond au pays de livraison, on retombe sur
+-- pricing_settings.shipping_flat_rate.
+-- ---------------------------------------------------------------------
+create table if not exists public.shipping_rates (
+  id uuid primary key default gen_random_uuid(),
+  country text not null default 'FR',
+  max_grams integer,
+  price numeric(10,2) not null check (price >= 0),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists shipping_rates_country_idx on public.shipping_rates (country, max_grams);
+
+-- Empêche deux tranches ambiguës pour le même pays (coalesce car NULL ne s'unifie
+-- jamais avec NULL dans un index unique standard).
+create unique index if not exists shipping_rates_unique_bracket
+  on public.shipping_rates (country, coalesce(max_grams, -1));
 
 -- ---------------------------------------------------------------------
 -- Commandes
@@ -131,6 +166,18 @@ create table if not exists public.orders (
   updated_at timestamptz not null default now()
 );
 
+-- Point relais choisi par le client (id, nom, adresse…), si applicable. Ajouté
+-- après coup : idempotent pour les bases déjà créées.
+alter table public.orders
+  add column if not exists relay_point jsonb;
+
+-- Mode de livraison choisi au panier. En 'relais' sans relay_point renseigné :
+-- le client a donné son adresse (voir shipping_address) mais le point relais
+-- le plus proche reste à choisir manuellement (widget Mondial Relay pas encore
+-- activé, cf. NEXT_PUBLIC_MONDIAL_RELAY_BRAND). Idempotent.
+alter table public.orders
+  add column if not exists delivery_mode text check (delivery_mode in ('relais', 'domicile'));
+
 create index if not exists orders_created_idx on public.orders (created_at desc);
 create index if not exists orders_status_idx on public.orders (status);
 
@@ -144,6 +191,12 @@ create table if not exists public.order_items (
   unit_price numeric(10,2) not null,
   quantity integer not null check (quantity > 0)
 );
+
+-- Poids unitaire au moment de la commande (grammes), pour préparer l'étiquette
+-- transporteur même si la variante est modifiée ou supprimée depuis. Ajouté
+-- après coup : idempotent pour les bases déjà créées.
+alter table public.order_items
+  add column if not exists grams numeric(10,2);
 
 create index if not exists order_items_order_idx on public.order_items (order_id);
 
@@ -185,6 +238,7 @@ alter table public.pricing_settings  enable row level security;
 alter table public.materials         enable row level security;
 alter table public.products          enable row level security;
 alter table public.variants          enable row level security;
+alter table public.shipping_rates    enable row level security;
 alter table public.orders            enable row level security;
 alter table public.order_items       enable row level security;
 
@@ -218,6 +272,14 @@ create policy "variants_public_read" on public.variants
   for select using (active or public.is_admin());
 drop policy if exists "variants_admin_all" on public.variants;
 create policy "variants_admin_all" on public.variants
+  for all using (public.is_admin()) with check (public.is_admin());
+
+-- frais de livraison : lecture publique (affichés au panier), écriture admin
+drop policy if exists "shipping_rates_public_read" on public.shipping_rates;
+create policy "shipping_rates_public_read" on public.shipping_rates
+  for select using (true);
+drop policy if exists "shipping_rates_admin_write" on public.shipping_rates;
+create policy "shipping_rates_admin_write" on public.shipping_rates
   for all using (public.is_admin()) with check (public.is_admin());
 
 -- commandes : admin uniquement

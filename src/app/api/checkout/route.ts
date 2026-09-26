@@ -1,18 +1,39 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getStripe } from "@/lib/stripe";
-import { shippingFor } from "@/lib/pricing";
+import { quoteShipping } from "@/lib/shipping";
 import { SHOP } from "@/lib/config";
+import type { RelayPoint } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 type Item = { variantId: string; quantity: number };
 
+/** Valide et borne la taille des champs du point relais (donnée venant du navigateur). */
+function parseRelayPoint(input: unknown): RelayPoint | null {
+  if (!input || typeof input !== "object") return null;
+  const r = input as Record<string, unknown>;
+  const str = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+  const id = str(r.id, 40);
+  const name = str(r.name, 80);
+  const address1 = str(r.address1, 120);
+  const postcode = str(r.postcode, 20);
+  const city = str(r.city, 80);
+  const country = str(r.country, 2);
+  if (!id || !name || !address1 || !postcode || !city || !country) return null;
+  const address2 = str(r.address2, 120);
+  return { id, name, address1, postcode, city, country, ...(address2 ? { address2 } : {}) };
+}
+
 export async function POST(req: Request) {
   let items: Item[];
+  let relayPoint: RelayPoint | null;
+  let deliveryMode: "relais" | "domicile";
   try {
     const body = await req.json();
     items = Array.isArray(body.items) ? body.items : [];
+    relayPoint = parseRelayPoint(body.relayPoint);
+    deliveryMode = relayPoint || body.deliveryMode === "relais" ? "relais" : "domicile";
   } catch {
     return NextResponse.json({ error: "Requête invalide." }, { status: 400 });
   }
@@ -29,13 +50,14 @@ export async function POST(req: Request) {
   // Les prix viennent TOUJOURS de la base, jamais du navigateur.
   const { data: variants, error } = await supabase
     .from("variants")
-    .select("id, sku, name, price, stock_quantity, active, products!inner(title, image_url, active)")
+    .select("id, sku, name, price, grams, stock_quantity, active, products!inner(title, image_url, active)")
     .in("id", items.map((i) => i.variantId));
   if (error) return NextResponse.json({ error: "Catalogue indisponible." }, { status: 500 });
 
   const byId = new Map((variants ?? []).map((v) => [v.id, v]));
   const lineItems = [];
   let subtotal = 0;
+  let totalGrams = 0;
 
   for (const item of items) {
     const v = byId.get(item.variantId);
@@ -60,6 +82,7 @@ export async function POST(req: Request) {
     }
     const unit = Math.round(Number(v.price) * 100);
     subtotal += (unit * item.quantity) / 100;
+    totalGrams += Number(v.grams) * item.quantity;
     lineItems.push({
       quantity: item.quantity,
       price_data: {
@@ -68,15 +91,23 @@ export async function POST(req: Request) {
         product_data: {
           name: `${product.title} — ${v.name}`,
           ...(product.image_url?.startsWith("https://") ? { images: [product.image_url] } : {}),
-          metadata: { variant_id: v.id, sku: v.sku },
+          metadata: { variant_id: v.id, sku: v.sku, grams: String(v.grams) },
         },
       },
     });
   }
 
-  const { data: settings } = await supabase.from("pricing_settings").select("*").eq("id", 1).single();
-  const shipping = settings ? shippingFor(subtotal, settings) : 0;
+  const country = relayPoint?.country || "FR";
+  const shipping = await quoteShipping(supabase, totalGrams, subtotal, country);
   const site = process.env.NEXT_PUBLIC_SITE_URL ?? new URL(req.url).origin;
+
+  const shippingLabel = relayPoint
+    ? `Point Relais — ${relayPoint.name}, ${relayPoint.city}`
+    : deliveryMode === "relais"
+      ? "Point Relais (le plus proche de vous, confirmé par e-mail)"
+      : shipping === 0
+        ? "Livraison offerte"
+        : "Livraison suivie";
 
   try {
     const session = await getStripe().checkout.sessions.create({
@@ -88,12 +119,16 @@ export async function POST(req: Request) {
         {
           shipping_rate_data: {
             type: "fixed_amount",
-            display_name: shipping === 0 ? "Livraison offerte" : "Livraison suivie",
+            display_name: shippingLabel,
             fixed_amount: { amount: Math.round(shipping * 100), currency: "eur" },
           },
         },
       ],
       phone_number_collection: { enabled: true },
+      metadata: {
+        delivery_mode: deliveryMode,
+        ...(relayPoint ? { relay_point: JSON.stringify(relayPoint) } : {}),
+      },
       success_url: `${site}/commande/merci?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/panier`,
     });

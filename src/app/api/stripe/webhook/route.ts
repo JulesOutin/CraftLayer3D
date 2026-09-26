@@ -56,6 +56,16 @@ export async function POST(req: Request) {
   const shipping = (session.total_details?.amount_shipping ?? 0) / 100;
   const total = (session.amount_total ?? 0) / 100;
 
+  let relayPoint = null;
+  if (session.metadata?.relay_point) {
+    try {
+      relayPoint = JSON.parse(session.metadata.relay_point);
+    } catch {
+      console.error("Point relais illisible dans les métadonnées", session.id);
+    }
+  }
+  const deliveryMode = session.metadata?.delivery_mode === "relais" ? "relais" : "domicile";
+
   const { data: order, error } = await supabase
     .from("orders")
     .insert({
@@ -67,6 +77,8 @@ export async function POST(req: Request) {
         ...(shippingDetails?.address ?? {}),
         phone: session.customer_details?.phone ?? null,
       },
+      relay_point: relayPoint,
+      delivery_mode: deliveryMode,
       subtotal,
       shipping,
       total,
@@ -94,6 +106,7 @@ export async function POST(req: Request) {
       variant_name: variantName ?? "",
       unit_price: (li.price?.unit_amount ?? 0) / 100,
       quantity: li.quantity ?? 1,
+      grams: product?.metadata?.grams ? Number(product.metadata.grams) : null,
     };
   });
 
@@ -107,13 +120,22 @@ export async function POST(req: Request) {
 
   // Le paiement est déjà encaissé : un échec ici ne doit pas faire échouer le webhook
   // (Stripe le rejouerait et dupliquerait potentiellement le décrément).
+  const oversold: string[] = [];
   for (const it of items) {
     if (!it.variant_id) continue;
-    const { error: stockError } = await supabase.rpc("decrement_stock", {
+    const { data: stockResult, error: stockError } = await supabase.rpc("decrement_stock", {
       p_variant_id: it.variant_id,
       p_qty: it.quantity,
     });
     if (stockError) console.error("Décrément stock", it.variant_id, stockError);
+    else if (stockResult?.[0]?.had_enough === false) oversold.push(`${it.product_title} — ${it.variant_name}`);
+  }
+  if (oversold.length) {
+    console.error(`Survente sur la commande n° ${order.order_number}`, oversold);
+    await supabase
+      .from("orders")
+      .update({ notes: `⚠ Survente possible : ${oversold.join(", ")}` })
+      .eq("id", order.id);
   }
 
   await sendOrderConfirmationEmail({
@@ -129,6 +151,7 @@ export async function POST(req: Request) {
     subtotal,
     shipping,
     total,
+    relayPoint,
   });
 
   return NextResponse.json({ received: true });
