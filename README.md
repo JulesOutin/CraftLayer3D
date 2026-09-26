@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Boutique d'impression 3D — Next.js + Supabase + Stripe
 
 MVP complet : catalogue, panier, paiement Stripe, commandes enregistrées automatiquement,
@@ -152,3 +153,6 @@ Modifier un réglage ou une matière recalcule tout le catalogue (sauf les prix 
 - Devis sur fichier STL envoyé par le client.
 - Export comptable CSV des ventes.
 - Alerte admin (e-mail ou tableau de bord) quand une déclinaison passe sous un seuil de stock.
+=======
+# CraftLayer3D
+>>>>>>> 4eddb6a43db1f03feff4679d481c60913b61d4d4
