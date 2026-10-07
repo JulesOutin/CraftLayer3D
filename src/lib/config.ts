@@ -5,4 +5,6 @@ export const SHOP = {
   leadTime: "Imprimé et expédié sous 3 à 5 jours ouvrés",
   contactEmail: "contact@exemple.fr",
   shippingCountries: ["FR", "BE", "LU", "CH", "MC"] as const,
+  // Pays où la livraison en point relais est possible (les autres : domicile uniquement)
+  relayCountries: ["FR", "BE", "LU"] as const,
 };

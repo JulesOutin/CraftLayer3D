@@ -197,6 +197,13 @@ export default function CartPage() {
           </label>
         </div>
 
+        {mode === "relais" && (
+          <p className="rounded-lg bg-ok/10 p-3 text-sm">
+            La livraison en point relais est disponible en France, Belgique et Luxembourg. Pour la Suisse et
+            Monaco, choisissez « À domicile ».
+          </p>
+        )}
+
         {mode === "relais" &&
           (WIDGET_ENABLED ? (
             <div>
